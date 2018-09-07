@@ -598,26 +598,29 @@ def ReadSFLPlist(file_handle, recent_items, source, user=''):
 
         for item in items:
             url = ''
+            name = ''
             try: url = item['URL']['NS.relative']
             except: pass
             if url.find('x-apple-findertag') == 0: continue # skipping these items
-            name = item['name']
-            recent_type = RecentType.UNKNOWN
-            basename = os.path.basename(source).lower()
-            if basename.find('recentservers') >=0 : recent_type = RecentType.SERVER
-            elif basename.find('recenthosts') >=0 : recent_type = RecentType.HOST
-            elif basename.find('recentdocuments') >=0 : recent_type = RecentType.DOCUMENT
-            elif basename.find('recentapplications') >=0 : recent_type = RecentType.APPLICATION
+            try: name = item['name']
+            except: pass
+            if name or url:
+                recent_type = RecentType.UNKNOWN
+                basename = os.path.basename(source).lower()
+                if basename.find('recentservers') >=0 : recent_type = RecentType.SERVER
+                elif basename.find('recenthosts') >=0 : recent_type = RecentType.HOST
+                elif basename.find('recentdocuments') >=0 : recent_type = RecentType.DOCUMENT
+                elif basename.find('recentapplications') >=0 : recent_type = RecentType.APPLICATION
 
-            ri = RecentItem(name, url, '', source, recent_type, user)
-            recent_items.append(ri)
-            # try: # Not reading bookmark right now, but this code should work!
-            #     bm = item['bookmark']
-            #     if type(bm) == ccl_bplist.NsKeyedArchiverDictionary: # Soemtimes its 'str', otherwise this
-            #         bm = bm['NS.data']
-            #     #print "bookmark bytes=", len(bm)
-            # except:
-            #     pass # Not everything has bookmarks
+                ri = RecentItem(name, url, '', source, recent_type, user)
+                recent_items.append(ri)
+                # try: # Not reading bookmark right now, but this code should work!
+                #     bm = item['bookmark']
+                #     if type(bm) == ccl_bplist.NsKeyedArchiverDictionary: # Sometimes its 'str', otherwise this
+                #         bm = bm['NS.data']
+                #     #print "bookmark bytes=", len(bm)
+                # except:
+                #     pass # Not everything has bookmarks
     except Exception as ex:
         log.exception('Error reading SFL plist')
 
@@ -635,7 +638,7 @@ def ProcessSFLFolder(mac_info, user_path, recent_items):
             for file_entry in files_list:
                 if file_entry['name'].lower().endswith('.sfl') and (file_entry['size'] > 446): # 446 is an empty plist, only keyed class data
                     source_path = source_folder + '/' + file_entry['name']
-                    mac_info.ExportFile(source_path, __Plugin_Name, user_name + "_")
+                    mac_info.ExportFile(source_path, __Plugin_Name, user_name + "_", False)
                     f = mac_info.OpenSmallFile(source_path)
                     if f != None:
                         ReadSFLPlist(f, recent_items, source_path, user_name)
@@ -649,7 +652,7 @@ def ProcessSFL(mac_info, recent_items):
     ProcessSFLFolder(mac_info, user_path_2, recent_items)
 
 def ProcessSinglePlist(mac_info, source_path, user, recent_items):
-    mac_info.ExportFile(source_path, __Plugin_Name, user + "_")
+    mac_info.ExportFile(source_path, __Plugin_Name, user + "_", False)
     success, plist, error = mac_info.ReadPlist(source_path)
     if success:
         if source_path.endswith('.GlobalPreferences.plist'):
@@ -680,7 +683,7 @@ def ProcessPreferencesFolder(mac_info, recent_items):
                 if file_entry['name'].lower().endswith('.plist') and \
                   (file_entry['name'].lower().find('lssharedfilelist') > 0) and (file_entry['size'] > 120): 
                     source_path = source_folder + '/' + file_entry['name']
-                    mac_info.ExportFile(source_path, __Plugin_Name, user_name + "_")
+                    mac_info.ExportFile(source_path, __Plugin_Name, user_name + "_", False)
                     ProcessSinglePlist(mac_info, source_path, user_name, recent_items)
 
 def Plugin_Start(mac_info):

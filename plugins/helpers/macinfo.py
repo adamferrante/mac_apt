@@ -23,8 +23,8 @@ import logging
 import ast
 from apfs_reader import *
 from hfs_alt import HFSVolume
-from datetime import datetime
 from common import *
+from structs import *
 
 log = logging.getLogger('MAIN.HELPERS.MACINFO')
 
@@ -62,6 +62,7 @@ class UserInfo:
         self.DARWIN_USER_DIR = '' #0  With DARWIN_USER_* folders, there may be one or more comma separated
         self.DARWIN_USER_TEMP_DIR = '' #T
         self.DARWIN_USER_CACHE_DIR = ''#C
+        self._source = '' # Path of data source
 
 class HfsVolumeInfo:
     def __init__(self):
@@ -78,7 +79,7 @@ class HfsVolumeInfo:
         self.is_HFSX = False
 
 class NativeHfsParser:
-    '''Only use for reading compressed files not handled by TSK'''
+    '''Native HFS+ parser - pure python implementation'''
     def __init__(self):
         self.initialized = False
         self.volume = None
@@ -86,7 +87,7 @@ class NativeHfsParser:
     def Initialize(self, pytsk_img, offset):
         if not pytsk_img: return False
         try:
-            log.debug('Initializing NativeHFSParser->HFSVolume')
+            log.debug('Initializing NativeHFSParser->HFSVolume  Vol starts @ offset 0x{:X}'.format(offset))
             self.volume = HFSVolume(pytsk_img, offset)
             self.initialized = True
             return True
@@ -112,8 +113,27 @@ class NativeHfsParser:
             hfs_info.num_folders = header.folderCount
             return hfs_info
         except Exception as ex:
-            log.exception("Failed to read HFS info")         
+            log.exception("Failed to read HFS info")
         return None
+
+    def GetFileSize(self, path, error=None):
+        '''For a given file path, gets logical file size, or None if error'''
+        try:
+            return self.volume.GetFileSize(path)
+        except Exception as ex:
+            log.debug ("NativeHFSParser->Exception from GetFileSize() " + str(ex))
+        return error
+
+    def _GetSizeFromRec(self, k, v):
+        '''For a file's catalog key & value , gets logical file size, or 0 if error'''
+        try:
+            return self.volume.GetFileSizeFromFileRecord(v)
+        except Exception as ex:
+            name = getString(k)
+            log.error ("NativeHFSParser->Exception from _GetSizeFromRec()" +\
+                        "\nFilename=" + name + " CNID=" + str(v.data.fileID) +\
+                        "\nException details: " + str(ex))
+        return 0
 
     def OpenSmallFile(self, path):
         '''Open files, returns open file handle'''
@@ -121,16 +141,16 @@ class NativeHfsParser:
             raise Exception("Volume not loaded (initialized)!")
         try:
             log.debug("Trying to open file : " + path)
-            data = self.volume.readFile(path, True)
-            size = len(data)
-            #if size > 209715200:
-            #    raise ValueError('File size > 200 MB, may crash!')
+            size = self.GetFileSize(path)
+            if size > 209715200:
+                log.warning('File size > 200 MB, may crash! File size is {} bytes'.format(size))
+            data = self.volume.readFile(path)
             f = tempfile.SpooledTemporaryFile(max_size=size)
             f.write(data)
             f.seek(0)
             return f
         except:
-            log.exception("Failed to open file {}".format(path))
+            log.exception("NativeHFSParser->Failed to open file {}".format(path))
 
         return None
 
@@ -142,15 +162,126 @@ class NativeHfsParser:
         if not self.initialized:
             raise Exception("Volume not loaded!")
         try:
-            log.debug("Trying to export file : " + path)
-            data = self.volume.readFile(path, True)
-            f = open(extract_to_path, "wb")
-            f.write(data)
-            f.close()
-            return True
+            log.debug("Trying to export file : " + path + " to " + extract_to_path)
+            with open(extract_to_path, "wb") as f:
+                data = self.volume.readFile(path, f)
+                f.close()
+                return True
         except Exception as ex:
-            log.exception("Failed to export file {} to {}".format(path, extract_to_path))
+            log.exception("NativeHFSParser->Failed to export file {} to {}".format(path, extract_to_path))
         return False
+
+    def GetFileMACTimes(self, file_path):
+        '''
+           Returns dictionary {c_time, m_time, cr_time, a_time} 
+           where cr_time = created time and c_time = Last time inode/mft modified
+        '''
+        try:
+            return self.volume.GetFileMACTimes(file_path)
+        except:
+            log.exception('NativeHFSParser->Error trying to get MAC times')
+        return { 'c_time':None, 'm_time':None, 'cr_time':None, 'a_time':None }
+
+    def _GetFileMACTimesFromFileRecord(self, v):
+        '''Return times from file's catalog record'''
+        try:
+            return self.volume.GetFileMACTimesFromFileRecord(v)
+        except:
+            log.exception('NativeHFSParser->Error trying to get MAC times')
+        return { 'c_time':None, 'm_time':None, 'cr_time':None, 'a_time':None }
+
+    def IsValidFilePath(self, path):
+        '''Check if a file path is valid, does not check for folders!'''
+        try:
+            return self.volume.IsValidFilePath(path)
+        except Exception:
+            log.exception('NativeHFSParser->Failed trying to check valid file path')
+        return False
+    
+    def IsValidFolderPath(self, path):
+        '''Check if a folder path is valid'''
+        try:
+            return self.volume.IsValidFolderPath(path)
+        except Exception:
+            log.exception('NativeHFSParser->Failed trying to check valid folder path')
+        return False
+
+    def GetUserAndGroupID(self, path):
+        '''
+            Returns tuple (success, UID, GID) for object identified by path
+            If failed to get values, success=False
+            UID & GID are returned as strings
+        '''
+        success, uid, gid = False, 0, 0
+        try:
+            uid, gid = self.volume.GetUserAndGroupID(path)
+            uid = str(uid)
+            gid = str(gid)
+            success = True
+        except Exception as ex:
+            log.error("Exception trying to get uid & gid for " + path + ' Exception details: ' + str(ex))
+        return success, uid, gid
+
+    def GetUserAndGroupIDForFile(self, path):
+        '''
+            Returns tuple (success, UID, GID) for file identified by path
+            If failed to get values, success=False
+            UID & GID are returned as strings
+        '''
+        return self.GetUserAndGroupID(path)
+
+    def GetUserAndGroupIDForFolder(self, path):
+        '''
+            Returns tuple (success, UID, GID) for folder identified by path
+            If failed to get values, success=False
+            UID & GID are returned as strings
+        '''
+        return self.GetUserAndGroupID(path)
+
+    def ListItemsInFolder(self, path='/', types_to_fetch=EntryType.FILES_AND_FOLDERS, include_dates=False):
+        ''' 
+        Returns a list of files and/or folders in a list
+        Format of list = [ { 'name':'got.txt', 'type':EntryType.FILES, 'size':10, 'dates': [] }, .. ]
+        'path' should be linux style using forward-slash like '/var/db/xxyy/file.tdc'
+        '''
+        items = [] # List of dictionaries
+        try:
+            k,v = self.volume.catalogTree.getRecordFromPath(path)
+            if k:
+                if v.recordType == kHFSPlusFolderRecord:
+                    for k,v in self.volume.catalogTree.getFolderContents(v.data.folderID):
+                        if v.recordType in (kHFSPlusFolderRecord, kHFSPlusFileRecord):
+                            try:
+                                entry_type = EntryType.FILES if v.recordType == kHFSPlusFileRecord else EntryType.FOLDERS
+                                if types_to_fetch == EntryType.FILES_AND_FOLDERS:
+                                    items.append( self._BuildFileListItemFromRecord(k, v, entry_type, include_dates) )
+                                elif types_to_fetch == EntryType.FILES and entry_type == EntryType.FILES:
+                                    items.append( self._BuildFileListItemFromRecord(k, v, entry_type, include_dates) )
+                                elif types_to_fetch == EntryType.FOLDERS and entry_type == EntryType.FOLDERS:
+                                    items.append( self._BuildFileListItemFromRecord(k, v, entry_type, include_dates) )
+                            except Exception as ex:
+                                log.error("Error accessing file/folder record: " + str(ex))
+                else:
+                    log.error("Can't get dir listing as this is not a folder : " + path)
+            else:
+                log.error('Path not found : ' + path)
+        except:
+            log.error('Error trying to get file list from folder: ' + path)
+            log.exception('')
+        return items
+    
+    def _BuildFileListItemFromRecord(self, k, v, entry_type, include_dates):
+        name = getString(k)
+        item = None        
+        if include_dates:
+            item = { 'name':name, 
+                     'type':entry_type, 
+                     'size':self._GetSizeFromRec(k, v) if entry_type == EntryType.FILES else 0, 
+                     'dates': self._GetFileMACTimesFromFileRecord(v)
+                    }
+        else:
+            item = { 'name':name, 'type':entry_type, 'size':self._GetSizeFromRec(k, v) if entry_type == EntryType.FILES else 0 }
+        return item
 
 class MacInfo:
 
@@ -166,6 +297,7 @@ class MacInfo:
         self.users = []
         self.hfs_native = NativeHfsParser()
         self.is_apfs = False
+        self.use_native_hfs_parser = True
 
     # Public functions, plugins can use these
     def GetFileMACTimes(self, file_path):
@@ -173,6 +305,9 @@ class MacInfo:
            Returns dictionary {c_time, m_time, cr_time, a_time} 
            where cr_time = created time and c_time = Last time inode/mft modified
         '''
+        if self.use_native_hfs_parser:
+            return self.hfs_native.GetFileMACTimes(file_path)
+
         times = { 'c_time':None, 'm_time':None, 'cr_time':None, 'a_time':None }
         try:
             tsk_file = self.osx_FS.open(file_path)
@@ -184,10 +319,12 @@ class MacInfo:
             log.exception('Error trying to get MAC times')
         return times
 
-    def ExportFile(self, artifact_path, subfolder_name, file_prefix=''):
+    def ExportFile(self, artifact_path, subfolder_name, file_prefix='', check_for_sqlite_files=True):
         '''Export an artifact (file) to the output\Export\subfolder_name folder.
            Ideally subfolder_name should be the name of the plugin.
            If this is an sqlite db, the -shm and -wal files will also be exported.
+           The check for -shm and -wal can be skipped if  check_for_sqlite_files=False
+           It is much faster to skip the check if not needed
         '''
         export_path = os.path.join(self.output_params.export_path, subfolder_name)
         # create folder
@@ -206,26 +343,23 @@ class MacInfo:
         shm_file_path = file_path + "-shm" # For sqlite db
         wal_file_path = file_path + "-wal" # For sqlite db
 
-        if self.ExtractFile(artifact_path, file_path):
-            # Logging exports
-            mac_times = self.GetFileMACTimes(artifact_path)
-            self.output_params.export_log_csv.WriteRow([artifact_path, file_path, mac_times['c_time'], mac_times['m_time'], mac_times['cr_time'], mac_times['a_time']])
+        if self._ExtractFile(artifact_path, file_path):
+            if check_for_sqlite_files:
+                if self.IsValidFilePath(artifact_path + "-shm"):
+                    self._ExtractFile(artifact_path + "-shm", shm_file_path)
+                if self.IsValidFilePath(artifact_path + "-wal"):
+                    self._ExtractFile(artifact_path + "-wal", wal_file_path)
+            return True
+        return False
 
-            if self.IsValidFilePath(artifact_path + "-shm"):
-                if self.ExtractFile(artifact_path + "-shm", shm_file_path):
-                    mac_times = self.GetFileMACTimes(artifact_path + "-shm")
-                    self.output_params.export_log_csv.WriteRow([artifact_path + "-shm", shm_file_path, mac_times['c_time'], mac_times['m_time'], mac_times['cr_time'], mac_times['a_time']])
-                else:
-                    log.info("Failed to export '" + artifact_path + "-shm' to '" + shm_file_path + "'")
-            if self.IsValidFilePath(artifact_path + "-wal"):
-                if self.ExtractFile(artifact_path + "-wal", wal_file_path):
-                    mac_times = self.GetFileMACTimes(artifact_path + "-wal")
-                    self.output_params.export_log_csv.WriteRow([artifact_path + "-wal", wal_file_path, mac_times['c_time'], mac_times['m_time'], mac_times['cr_time'], mac_times['a_time']])
-                else:
-                    log.info("Failed to export '" + artifact_path + "-wal' to '" + wal_file_path + "'")
+    def _ExtractFile(self, artifact_path, export_path):
+        '''Internal function, just export, no checks!'''
+        if self.ExtractFile(artifact_path, export_path):
+            mac_times = self.GetFileMACTimes(artifact_path)
+            self.output_params.export_log_csv.WriteRow([artifact_path, export_path, mac_times['c_time'], mac_times['m_time'], mac_times['cr_time'], mac_times['a_time']])
             return True
         else:
-            log.info("Failed to export '" + artifact_path + "' to '" + file_path + "'")
+            log.info("Failed to export '" + artifact_path + "' to '" + export_path + "'")
         return False
 
     def ReadPlist(self, path):
@@ -249,6 +383,8 @@ class MacInfo:
 
     def IsValidFilePath(self, path):
         '''Check if a file path is valid, does not check for folders!'''
+        if self.use_native_hfs_parser:
+            return self.hfs_native.IsValidFilePath(path)
         try:
             valid_file = self.osx_FS.open(path)
             return True
@@ -258,6 +394,8 @@ class MacInfo:
     
     def IsValidFolderPath(self, path):
         '''Check if a folder path is valid'''
+        if self.use_native_hfs_parser:
+            return self.hfs_native.IsValidFolderPath(path)
         try:
             valid_folder = self.osx_FS.open_dir(path)
             return True
@@ -267,19 +405,23 @@ class MacInfo:
 
     def GetFileSize(self, path, error=None):
         '''For a given file path, gets logical file size, or None if error'''
+        if self.use_native_hfs_parser:
+            return self.hfs_native.GetFileSize(path)
         try:
             valid_file = self.osx_FS.open(path) 
             return valid_file.info.meta.size
         except Exception as ex:
             log.debug (" Unknown exception from GetFileSize() " + str(ex) + " Perhaps file does not exist " + path)
-        return None
+        return error
 
     def ListItemsInFolder(self, path='/', types_to_fetch=EntryType.FILES_AND_FOLDERS, include_dates=False):
         ''' 
         Returns a list of files and/or folders in a list
-        Format of list = [ { 'name':'got.txt', 'type':EntryType.FILE, 'size':10, 'dates': [] }, .. ]
+        Format of list = [ { 'name':'got.txt', 'type':EntryType.FILES, 'size':10, 'dates': [] }, .. ]
         'path' should be linux style using forward-slash like '/var/db/xxyy/file.tdc'
         '''
+        if self.use_native_hfs_parser:
+            return self.hfs_native.ListItemsInFolder(path, types_to_fetch, include_dates)
         items = [] # List of dictionaries
         try:
             dir = self.osx_FS.open_dir(path)
@@ -290,7 +432,8 @@ class MacInfo:
                 elif not self._IsValidFileOrFolderEntry(entry): continue # this filters for allocated files and folders only
                 entry_type = EntryType.FOLDERS if entry.info.name.type == pytsk3.TSK_FS_NAME_TYPE_DIR else EntryType.FILES
                 if include_dates:
-                    item = { 'name':name, 'type':entry_type, 'size':self._GetSize(entry), 'dates': self.GetFileMACTimes(path + '/' + name) }
+                    path_no_trailing_slash = path.rstrip('/')
+                    item = { 'name':name, 'type':entry_type, 'size':self._GetSize(entry), 'dates': self.GetFileMACTimes(path_no_trailing_slash + '/' + name) }
                 else:
                     item = { 'name':name, 'type':entry_type, 'size':self._GetSize(entry) }
                 if types_to_fetch == EntryType.FILES_AND_FOLDERS:
@@ -310,6 +453,8 @@ class MacInfo:
 
     def OpenSmallFile(self, path):
         '''Open files less than 200 MB, returns open file handle'''
+        if self.use_native_hfs_parser:
+            return self.hfs_native.OpenSmallFile(path)
         try:
             log.debug("Trying to open file : " + path)
             tsk_file = self.osx_FS.open(path)
@@ -332,7 +477,8 @@ class MacInfo:
             if str(ex).find('tsk_fs_file_open: path not found:') > 0:
                 log.error("OpenSmallFile() returned 'Path not found' error for path: {}".format(path))
             elif str(ex).find('tsk_fs_attrlist_get: Attribute 4352 not found') > 0 or \
-                 (str(ex).find('Read error: Invalid file offset') > 0 and self._IsFileCompressed(tsk_file)):
+                 (str(ex).find('Read error: Invalid file offset') > 0 and self._IsFileCompressed(tsk_file)) or \
+                 str(ex).find('Read error: Error in metadata') > 0:
                 log.debug("Known TSK bug caused Error: Failed to open file {}".format(path))
                 log.debug("Trying to open with Native HFS parser")
                 try:
@@ -343,12 +489,13 @@ class MacInfo:
                     log.error("Failed to open file: " + path)
                     log.debug("Exception details:\n", exc_info=True)
             else:
-                log.error("Failed to open file {}".format(path)) 
-                log.debug("Exception details:\n", exc_info=True)      
+                log.exception("Failed to open file {}".format(path)) 
         return None
 
     def ExtractFile(self, tsk_path, destination_path):
         '''Extract a file from image to provided destination path'''
+        if self.use_native_hfs_parser:
+            return self.hfs_native.ExtractFile(tsk_path, destination_path)
         try:
             tsk_file = self.osx_FS.open(tsk_path)
             size = tsk_file.info.meta.size
@@ -366,7 +513,8 @@ class MacInfo:
                             f.write(data)
                         except Exception as ex:
                             if str(ex).find('tsk_fs_attrlist_get: Attribute 4352 not found') > 0 or \
-                               (str(ex).find('Read error: Invalid file offset') > 0 and self._IsFileCompressed(tsk_file)):
+                               (str(ex).find('Read error: Invalid file offset') > 0 and self._IsFileCompressed(tsk_file)) or \
+                               str(ex).find('Read error: Error in metadata') > 0:
                                 log.debug("Known TSK bug caused Error: Failed to read file {}".format(tsk_path))
                                 log.debug("Trying to read with Native HFS parser")
                                 try:
@@ -378,6 +526,9 @@ class MacInfo:
                                 except Exception as ex2:
                                     log.error("Failed to export file: " + tsk_path)
                                     log.debug("Exception details:\n", exc_info=True)
+                                return False
+                            else:
+                                log.exception("Failed to read file {}".format(tsk_path)) 
                                 return False
                     f.flush()
                     f.close()
@@ -531,6 +682,7 @@ class MacInfo:
                     target_user.home_dir = folder_path
                     target_user.user_name = folder['name']
                     target_user.real_name = folder['name']
+                    target_user._source = folder_path
 
     def _ReadPasswordPolicyData(self, password_policy_data, target_user):
         try:
@@ -566,8 +718,10 @@ class MacInfo:
         for plist_meta in user_plists:
             if plist_meta['size'] > 0:
                 try:
-                    f = self.OpenSmallFile(users_path + '/' + plist_meta['name'])
+                    user_plist_path = users_path + '/' + plist_meta['name']
+                    f = self.OpenSmallFile(user_plist_path)
                     if f!= None:
+                        self.ExportFile(user_plist_path, 'USERS', '', False)
                         plist = biplist.readPlist(f)
                         home_dir = self.GetArrayFirstElement(plist.get('home', ''))
                         if home_dir != '':
@@ -582,6 +736,7 @@ class MacInfo:
                             target_user.user_name = self.GetArrayFirstElement(plist.get('name', ''))
                             target_user.real_name = self.GetArrayFirstElement(plist.get('realname', ''))
                             target_user.pw_hint = self.GetArrayFirstElement(plist.get('hint', ''))
+                            target_user._source = user_plist_path
                             osx_version = self.GetVersionDictionary()
                             if osx_version['major'] == 10 and osx_version['minor'] <= 9: # Mavericks & earlier
                                 password_policy_data = plist.get('passwordpolicyoptions', None)
@@ -592,13 +747,13 @@ class MacInfo:
                             else: # 10.10 - Yosemite & higher
                                 account_policy_data = plist.get('accountPolicyData', None)
                                 if account_policy_data == None: 
-                                    log.debug('Could not find accountPolicyData for user {}'.format(target_user.user_name))
+                                    pass #log.debug('Could not find accountPolicyData for user {}'.format(target_user.user_name))
                                 else:
                                     self._ReadAccountPolicyData(account_policy_data, target_user)
                         else:
                             log.error('Did not find \'home\' in ' + plist_meta['name'])
-                except Exception as ex:
-                    log.error ("Could not open plist " + plist_meta['name'] + " Exception: " + str(ex))
+                except:
+                    log.exception ("Could not open plist " + user_plist_path)
         self._GetDomainUserInfo()
         self._GetDarwinFoldersInfo() # This probably does not apply to OSX < Mavericks !
 
@@ -783,7 +938,8 @@ class ApfsMacInfo(MacInfo):
                     if x['type'] == 'Folder':
                         x['type'] = EntryType.FOLDERS
                         items.append(dict(x))
-        return items 
+        return items
+
 # TODO: Make this class more efficient, perhaps remove some extractions!
 class MountedMacInfo(MacInfo):
     def __init__(self, root_folder_path, output_params):
@@ -858,7 +1014,7 @@ class MountedMacInfo(MacInfo):
     def ListItemsInFolder(self, path='/', types_to_fetch=EntryType.FILES_AND_FOLDERS, include_dates=False):
         ''' 
         Returns a list of files and/or folders in a list
-        Format of list = [ {'name':'got.txt', 'type':EntryType.FILE, 'size':10}, .. ]
+        Format of list = [ {'name':'got.txt', 'type':EntryType.FILES, 'size':10}, .. ]
         'path' should be linux style using forward-slash like '/var/db/xxyy/file.tdc'
         and starting at root / 
         '''
@@ -915,12 +1071,12 @@ class MountedMacInfo(MacInfo):
                         f.write(data)
                     f.flush()
             except Exception as ex:
-                log.error ("Failed to create file for writing - " + destination_path + "\n" + str(ex))
-                log.debug("Exception details:\n", exc_info=True)   
+                log.exception ("Failed to create file for writing at " + destination_path)
+                return False 
             return True
         except Exception:
             log.error("Failed to open/find file " + source_file) 
-            log.debug("Exception details:\n", exc_info=True)           
+            log.debug("Exception details:\n", exc_info=True)       
         return False
 
     def _GetUserAndGroupID(self, path):
@@ -1014,6 +1170,7 @@ class MountedMacInfo(MacInfo):
                     user_info.DARWIN_USER_DIR       = '/private/var/folders/' + unknown1_name + '/' + unknown2_name + '/0'
                     user_info.DARWIN_USER_CACHE_DIR = '/private/var/folders/' + unknown1_name + '/' + unknown2_name + '/C'
                     user_info.DARWIN_USER_TEMP_DIR  = '/private/var/folders/' + unknown1_name + '/' + unknown2_name + '/T'
+                    user_info._source = path_to_sandbox_db
                     self.users.append(user_info)
 
     def _GetUserInfo(self):

@@ -66,7 +66,7 @@ def PrintAll(imessages, output_params, source_path):
                       imsg.user, imsg.source
                      ]
         imessages_list.append(imsg_items)
-    WriteList("iMessages", "iMessages", imessages_list, imessages_info, output_params, source_path)
+    WriteList("iMessages", "IMessages", imessages_list, imessages_info, output_params, source_path)
 
 def GetAttachments(mac_info, sourceDirectory, user):
     '''
@@ -89,7 +89,7 @@ def GetAttachments(mac_info, sourceDirectory, user):
                         attachments = attachments['name']
                         files.append(sourceDirectory + folder_names + secondary_folder_names + tri_folder_names + attachments)
         for attachment_paths in files:
-            mac_info.ExportFile(attachment_paths, os.path.join(__Plugin_Name, user), "")
+            mac_info.ExportFile(attachment_paths, os.path.join(__Plugin_Name, user), '', False)
     else:
         log.info('No attachment files found under {}'.format(sourceDirectory))
 
@@ -168,10 +168,14 @@ def Plugin_Start(mac_info):
         processed_paths.append(user.home_dir)
         chats_file_path = chat_db_path.format(user.home_dir)
         if mac_info.IsValidFilePath(chats_file_path):
-            ProcessChatDbFromPath(mac_info, imessages, chats_file_path, user.user_name)
-            attachments_path = attachments_path.format(user.home_dir)
-            GetAttachments(mac_info, attachments_path, user.user_name)
-    PrintAll(imessages, mac_info.output_params, '')
+            ProcessChatDbFromPath(mac_info, imessages, chats_file_path, user_name)
+            user_attachments_path = attachments_path.format(user.home_dir)
+            if mac_info.IsValidFolderPath(user_attachments_path):
+                GetAttachments(mac_info, user_attachments_path, user_name)
+    if imessages:
+        PrintAll(imessages, mac_info.output_params, '')
+    else:
+        log.info("No imessages found.")
 
 def Plugin_Start_Standalone(input_files_list, output_params):
     log.info("Module Started as standalone")
@@ -182,7 +186,10 @@ def Plugin_Start_Standalone(input_files_list, output_params):
         if db != None:
             filename = os.path.basename(input_path)
             ReadiMessages(db, imessages, input_path, "")
-        PrintAll(imessages, output_params, '')
+        if imessages:
+            PrintAll(imessages, output_params, '')
+        else:
+            log.info("No imessages found.")
 
 if __name__ == '__main__':
     print ("This plugin is a part of a framework and does not run independently on its own!")

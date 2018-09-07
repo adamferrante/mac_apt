@@ -43,7 +43,7 @@ net_interfaces = []
 net_interface_info = [  ('Category',DataType.TEXT),('Active',DataType.TEXT),('BSD Name',DataType.TEXT),
                         ('IOBuiltin',DataType.TEXT),('IOInterfaceNamePrefix', DataType.TEXT),('IOInterfaceType',DataType.INTEGER),
                         ('IOInterfaceUnit', DataType.INTEGER),('IOMACAddress',DataType.TEXT),('IOPathMatch',DataType.TEXT),
-                        ('SCNetworkInterfaceInfo',DataType.TEXT),('SCNetworkInterfaceType',DataType.TEXT)  
+                        ('SCNetworkInterfaceInfo',DataType.TEXT),('SCNetworkInterfaceType',DataType.TEXT),('Source', DataType.TEXT)
                     ]
 
 net_interface_details = []
@@ -51,18 +51,18 @@ net_interface_detail_info = [ ('UUID',DataType.TEXT),('IPv4.ConfigMethod',DataTy
                               ('DeviceName',DataType.TEXT),('Hardware',DataType.TEXT),('Type',DataType.TEXT),
                               ('SubType',DataType.TEXT),('UserDefinedName',DataType.TEXT),('Proxies.ExceptionsList',DataType.TEXT),
                               ('SMB.NetBIOSName',DataType.TEXT),('SMB.Workgroup',DataType.TEXT),
-                              ('PPP',DataType.TEXT),('Modem',DataType.TEXT) #,('VirtualInterfaces',DataType.TEXT)
+                              ('PPP',DataType.TEXT),('Modem',DataType.TEXT),('Source', DataType.TEXT) #,('VirtualInterfaces',DataType.TEXT)
                             ]
 
 def GetNetworkInterface2Info(mac_info):
     '''Read interface info from /Library/Preferences/SystemConfiguration/preferences.plist'''
     preference_plist_path = '/Library/Preferences/SystemConfiguration/preferences.plist'
-    mac_info.ExportFile(preference_plist_path, __Plugin_Name)
+    mac_info.ExportFile(preference_plist_path, __Plugin_Name, '', False)
     success, plist, error_message = mac_info.ReadPlist(preference_plist_path)
     if success:
         try:
             for uuid, interface in plist['NetworkServices'].items():
-                interface_info = { 'UUID': uuid }
+                interface_info = { 'UUID': uuid, 'Source': preference_plist_path }
                 for item, value in interface.items():
                     if item == 'DNS' and value: log.info('Interface {} has DNS info as : {}'.format(uuid, value))
                     elif item == 'UserDefinedName' or item == 'Modem' or item == 'PPP': interface_info[item] = unicode(value)
@@ -86,7 +86,7 @@ def GetNetworkInterface2Info(mac_info):
                         for k, v in value.items():
                             if k in ['DeviceName', 'Hardware', 'Type', 'UserDefinedName']:  interface_info[k] = v
                             else:
-                                log.info('Found unknown data in plist at /NetworkServices/' + uuid + '/Interface/' + k + ' Value=' + v)
+                                log.info('Found unknown data in plist at /NetworkServices/' + uuid + '/Interface/' + k + ' Value=' + str(v))
                     elif item == 'SMB':
                         for k, v in value.items():
                             if k in ['NetBIOSName', 'Workgroup', 'Type', 'UserDefinedName']:  interface_info['SMB.'+ k] = v
@@ -106,14 +106,14 @@ def GetNetworkInterface2Info(mac_info):
                 except Exception:
                     log.debug('/VirtualNetworkInterfaces/Bridge not found!')'''
         except Exception:
-            log.error('/NetworkServices not found or other error from ' + preference_plist_path)
+            log.exception('/NetworkServices not found or other error from ' + preference_plist_path)
     else:
         log.error('Failed to read plist ' + preference_plist_path + " Error was : " + error_message)
 
 def GetNetworkInterfaceInfo(mac_info):
     '''Read interface info from NetworkInterfaces.plist'''
     path = '/Library/Preferences/SystemConfiguration/NetworkInterfaces.plist'
-    mac_info.ExportFile(path, __Plugin_Name)
+    mac_info.ExportFile(path, __Plugin_Name, '', False)
     log.debug("Trying to read {}".format(path))
     f = mac_info.OpenSmallFile(path)
     if f != None:
@@ -128,7 +128,7 @@ def GetNetworkInterfaceInfo(mac_info):
                     if category != 'Model': log.debug('Skipping ' + category)
                     continue;
                 for interface in cat_array:
-                    interface_info = {'Category':category}
+                    interface_info = {'Category':category, 'Source':path }
                     for item, value in interface.iteritems(): # .items() for Python 3
                         if item in ['Active','BSD Name','IOBuiltin','IOInterfaceNamePrefix','IOInterfaceType',
                                     'IOInterfaceUnit','IOPathMatch','SCNetworkInterfaceType']:
@@ -156,7 +156,7 @@ def GetDhcpInfo(mac_info):
             name = interface['name']
             if name.find(",") > 0:
                 #Process plist
-                mac_info.ExportFile('/private/var/db/dhcpclient/leases/' + name, __Plugin_Name)
+                mac_info.ExportFile('/private/var/db/dhcpclient/leases/' + name, __Plugin_Name, '', False)
                 name_no_ext = os.path.splitext(name)[0] # not needed as there is no .plist extension on these files
                 if_name, mac_address = name_no_ext.split(",")
                 log.info("Found mac address = " + mac_address + " on interface " + if_name)
@@ -209,15 +209,19 @@ def GetFileContents(mac_info, path):
 
 def GetResolvConf(mac_info):
     '''Reads last domain and nameserver data from resolv.conf'''
-    resolv_conf = GetFileContents(mac_info, '/private/var/run/resolv.conf')
-    mac_info.ExportFile('/private/var/run/resolv.conf', __Plugin_Name)
-    for line in resolv_conf:
-        log.info("resolve.conf Content --> " + line)
+    resolv_conf_path = '/private/var/run/resolv.conf'
+    if mac_info.IsValidFilePath(resolv_conf_path):
+        resolv_conf = GetFileContents(mac_info, resolv_conf_path)
+        mac_info.ExportFile(resolv_conf_path, __Plugin_Name, '', False)
+        for line in resolv_conf:
+            log.info("resolve.conf Content --> " + line)
+    else:
+        log.info("{} does not exist!".format(resolv_conf_path))
 
 def GetEtcHosts(mac_info):
     '''Reads hosts file'''
     etc_hosts = GetFileContents(mac_info, '/private/etc/hosts')
-    mac_info.ExportFile('/private/etc/hosts', __Plugin_Name)
+    mac_info.ExportFile('/private/etc/hosts', __Plugin_Name, '', False)
     for line in etc_hosts:
         log.info("/etc/hosts Content --> " + line)
 

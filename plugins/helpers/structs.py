@@ -36,7 +36,7 @@ http://mirror.informatimago.com/next/developer.apple.com/documentation/Carbon/Re
 from construct import *
 
 def getString(obj):
-    return obj.HFSUniStr255.unicode
+    return obj.HFSUniStr255.unicode.replace('/', ':')
 
 kHFSRootParentID            = 1
 kHFSRootFolderID            = 2
@@ -164,11 +164,30 @@ HFSPlusAttrKey = "HFSPlusAttrKey" / Struct(
     #Int32ub("nodeNumber")
 )
 
-HFSPlusAttrData = "HFSPlusAttrData" / Struct(
-    "recordType" / Int32ub,
+HFSPlusAttrInlineData = "HFSPlusAttrInlineData" / Struct(
     Array(2, "reserved" / Int32ub),
     "size" / Int32ub,
     "data" / Bytes(lambda ctx: ctx["size"])
+)
+
+HFSPlusAttrForkData = "HFSPlusAttrForkData" / Struct(
+    "reserved" / Int32ub,
+    HFSPlusForkData
+)
+
+HFSPlusAttrExtents = "HFSPlusAttrExtents" / Struct(
+    "reserved" / Int32ub,
+    HFSPlusExtentRecord
+)
+
+HFSPlusAttrRecord = "HFSPlusAttrRecord" / Struct(
+    "recordType" / Int32ub,
+    "data" / Switch(lambda ctx: ctx["recordType"], 
+    {
+        kHFSPlusAttrInlineData : HFSPlusAttrInlineData,
+        kHFSPlusAttrForkData : HFSPlusAttrForkData,
+        kHFSPlusAttrExtents: HFSPlusAttrExtents
+    }  )
 )
 
 HFSPlusCatalogKey = "HFSPlusCatalogKey" / Struct(

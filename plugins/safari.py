@@ -39,7 +39,7 @@ log = logging.getLogger('MAIN.' + __Plugin_Name) # Do not rename or remove this 
 <Home_DIR>/Library/Preferences/com.apple.safari.plist
   RecentSearchStrings[], SuccessfulLaunchTimestamp, DownloadsPath, HomePage, FrequentlyVisitedSitesCache
 <Home_DIR>/Library/Safari/ --> Bookmarks.plist, Downloads.plist, History.plist, Form Values (Encrypted!), 
-  UserNotificationPermissions.plist, 
+  UserNotificationPermissions.plist, RecentlyClosedTabs.plist
   LastSession.plist <-- SessionVersion, SessionWindows\[xx]\TabStates\[xx]\[TabTitle & TabURL]
   TopSites.plist <-- [BannedURLStrings] , DisplayedSitesLastModified, TopSites\[xx][TopSiteTitle & TopSiteURLString]
   Extensions\Extensions.plist <-- Installed Extensions\[xx][Archive File Name & Enabled]
@@ -53,11 +53,12 @@ class SafariItemType(IntEnum):
     BOOKMARK = 3
     DOWNLOAD = 4
     LASTSESSION = 5
-    EXTENSION = 6
-    GENERAL = 7 # From com.apple.safari.plist
-    HISTORYDOMAINS = 8
-    TOPSITE_BANNED = 9
-    FREQUENTLY_VISITED = 10 # From com.apple.safari.plist
+    RECENTCLOSEDTAB = 6
+    EXTENSION = 7
+    GENERAL = 8 # From com.apple.safari.plist
+    HISTORYDOMAINS = 9
+    TOPSITE_BANNED = 10
+    FREQUENTLY_VISITED = 11 # From com.apple.safari.plist
 
     def __str__(self):
         return self.name
@@ -150,7 +151,7 @@ def ReadSafariPlist(plist, safari_items, source, user):
         pass        
 
 def ProcessSafariPlist(mac_info, source_path, user, safari_items, read_plist_function):
-    mac_info.ExportFile(source_path, __Plugin_Name, user + "_")
+    mac_info.ExportFile(source_path, __Plugin_Name, user + "_", False)
     success, plist, error = mac_info.ReadPlist(source_path)
     if success:
         read_plist_function(plist, safari_items, source_path, user)
@@ -320,12 +321,47 @@ def ReadLastSessionPlist(plist, safari_items, source_path, user):
                 safari_items.append(si)
                 index += 1
     except Exception as ex:
-        log.error('SessionWindows not found or unable to parse. Error was {}'.format(str(ex)))    
+        log.error('SessionWindows not found or unable to parse. Error was {}'.format(str(ex)))
+
+def ReadRecentlyClosedTabsPlist(plist, safari_items, source_path, user):
+    try:
+        version = plist['ClosedTabOrWindowPersistentStatesVersion']
+        if version != '1':
+            log.warning('ClosedTabOrWindowPersistentStatesVersion is {}, this may not parse properly!'.format(version))
+    except:
+        log.error('ClosedTabOrWindowPersistentStatesVersion not found')
+    try:
+        tabs = plist['ClosedTabOrWindowPersistentStates']
+        for tab in tabs:
+            state_type = tab.get('PersistentStateType', None)
+            if state_type not in [0, 1]: 
+                log.warning('Unknown PersistentStateType: {}'.format(PersistentStateType))
+            state = tab.get('PersistentState', None)
+            if state:
+                date_closed = state.get('DateClosed', None)
+                private_mode = state.get('IsPrivateWindow', False)
+                if state_type == 0:
+                    si = SafariItem(SafariItemType.RECENTCLOSEDTAB, state.get('TabURL', ''), state.get('TabTitle', ''), 
+                                    date_closed, 'PRIVATE MODE' if private_mode else '', user, source_path)
+                    safari_items.append(si)
+                else: # assume 1 or higher
+                    tab_states = state.get('TabStates', [])
+                    for ts in tab_states:
+                        date_closed = ts.get('DateClosed', date_closed)
+                        ts.get('TabTitle')
+                        si = SafariItem(SafariItemType.RECENTCLOSEDTAB, ts.get('TabURL', ''), ts.get('TabTitle', ''), 
+                                        date_closed, 'PRIVATE MODE' if private_mode else '', user, source_path)
+                    safari_items.append(si)
+            else:
+                log.error('Key PersistentState not present!')
+    except Exception as ex:
+        log.error('ClosedTabOrWindowPersistentStates not found or unable to parse. Error was {}'.format(str(ex)))   
 
 def ProcessSafariFolder(mac_info, folder_path, user, safari_items):
     files_list = [ ['History.plist', ReadHistoryPlist] , ['Downloads.plist', ReadDownloadsPlist], 
                     ['Bookmarks.plist', ReadBookmarksPlist], ['TopSites.plist', ReadTopSitesPlist], 
-                    ['LastSession.plist', ReadLastSessionPlist], ['Extensions/Extensions.plist', ReadExtensionsPlist] ]
+                    ['LastSession.plist', ReadLastSessionPlist], ['Extensions/Extensions.plist', ReadExtensionsPlist],
+                    ['RecentlyClosedTabs.plist', ReadRecentlyClosedTabsPlist] ]
     for item in files_list:
         source_path = folder_path + '/' + item[0]
         if mac_info.IsValidFilePath(source_path):
@@ -335,6 +371,7 @@ def ProcessSafariFolder(mac_info, folder_path, user, safari_items):
     # Yosemite onwards there is History.db
     source_path = folder_path + '/History.db'
     if mac_info.IsValidFilePath(source_path) and mac_info.GetFileSize(source_path) > 0:
+        mac_info.ExportFile(source_path, __Plugin_Name, user + "_")
         try:
             sqlite = SqliteWrapper(mac_info)
             conn = sqlite.connect(source_path)
@@ -358,7 +395,8 @@ def Plugin_Start(mac_info):
         if mac_info.IsValidFilePath(source_path):
             ProcessSafariPlist(mac_info, source_path, user_name, safari_items, ReadSafariPlist)
         else:
-            log.debug('File not found: {}'.format(source_path))
+            if not user_name.startswith('_'):
+                log.debug('File not found: {}'.format(source_path))
         
         source_path = user_safari_path.format(user.home_dir)
         if mac_info.IsValidFolderPath(source_path):
@@ -391,6 +429,8 @@ def Plugin_Start_Standalone(input_files_list, output_params):
                     ReadLastSessionPlist(plist, safari_items, input_path, '')
                 elif input_path.endswith('Extensions.plist'):
                     ReadExtensionsPlist(plist, safari_items, input_path, '')
+                elif input_path.endswith('RecentlyClosedTabs.plist'):
+                    ReadRecentlyClosedTabsPlist(plist, safari_items, input_path, '')
                 else:
                     log.error("Unknown plist type encountered: {}".format(os.path.basename(input_path)))
             except Exception as ex:

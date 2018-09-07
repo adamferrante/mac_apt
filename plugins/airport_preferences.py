@@ -123,7 +123,7 @@ def PrintAll(networks, output_params, source_path):
                      ('Last connected channel',DataType.TEXT),('Other channel history',DataType.TEXT)
                    ]
 
-    log.info (str(len(networks)) + " network(s)")
+    log.info ("Found " + str(len(networks)) + " network(s)")
     data_list = []
     for wifi in networks:
         data_list.append( [ wifi.Name, wifi.SSIDString, wifi.Order, str(wifi.Type), wifi.SecurityType, wifi.AutoLogin, 
@@ -257,7 +257,7 @@ def ReadAirportPrefPlist(plist, networks):
 def Plugin_Start(mac_info):
     '''Main Entry point function for plugin'''
     airport_pref_plist_path = '/Library/Preferences/SystemConfiguration/com.apple.airport.preferences.plist'
-    mac_info.ExportFile(airport_pref_plist_path, __Plugin_Name)
+    mac_info.ExportFile(airport_pref_plist_path, __Plugin_Name, '', False)
     success, plist, error = mac_info.ReadPlist(airport_pref_plist_path)
     if success:
         networks = []

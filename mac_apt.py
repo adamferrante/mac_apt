@@ -35,7 +35,7 @@ import time
 import textwrap
 from plugin import *
 
-__VERSION = "0.2.6"
+__VERSION = "0.3"
 __PROGRAMNAME = "macOS Artifact Parsing Tool"
 __EMAIL = "yogesh@swiftforensics.com"
 
@@ -98,7 +98,6 @@ def FindOsxFiles(mac_info):
             log.info ("Could not find OSX/macOS kernel!")# On partial/corrupted images, this may not be found
         mac_info._GetSystemInfo()
         mac_info._GetUserInfo()
-        #PrintAttributes(fs_info)
         return True
     else:
         log.info ("Could not find OSX/macOS installation!")
@@ -118,6 +117,7 @@ def IsOsxPartition(img, partition_start_offset, mac_info):
             folders = fs.open_dir("/")
             mac_info.osx_FS = fs
             mac_info.osx_partition_start_offset = partition_start_offset
+            mac_info.hfs_native.Initialize(mac_info.pytsk_image, mac_info.osx_partition_start_offset)
             return FindOsxFiles(mac_info)
         except Exception:
             log.error ("Could not open / (root folder on partition)")
@@ -266,7 +266,8 @@ arg_parser.add_argument('-x', '--xlsx', action="store_true", help='Save output i
 arg_parser.add_argument('-c', '--csv', action="store_true", help='Save output as CSV files (Default option if no output type selected)')
 arg_parser.add_argument('-s', '--sqlite', action="store_true", help='Save output in an sqlite database')
 arg_parser.add_argument('-l', '--log_level', help='Log levels: INFO, DEBUG, WARNING, ERROR, CRITICAL (Default is INFO)')#, choices=['INFO','DEBUG','WARNING','ERROR','CRITICAL'])
-arg_parser.add_argument('plugin', nargs="+", help="Plugins to run (space seperated). 'ALL' will process every available plugin")
+arg_parser.add_argument('-u', '--use_tsk', action="store_true", help='Use sleuthkit instead of native HFS+ parser (This is slower!)')
+arg_parser.add_argument('plugin', nargs="+", help="Plugins to run (space separated). 'ALL' will process every available plugin")
 args = arg_parser.parse_args()
 
 if args.output_path:
@@ -356,10 +357,11 @@ except Exception as ex:
     Exit()
 
 if args.input_type.upper() != 'MOUNTED':
+    mac_info.use_native_hfs_parser = False if args.use_tsk else True
     try:
-        vol_info = pytsk3.Volume_Info(img) 
-        vs_info = vol_info.info # TSK_VS_INFO object
         mac_info.pytsk_image = img
+        vol_info = pytsk3.Volume_Info(img)
+        vs_info = vol_info.info # TSK_VS_INFO object
         mac_info.vol_info = vol_info
         found_osx = FindOsxPartition(img, vol_info, vs_info)
         Disk_Info(mac_info, args.input_path).Write()
@@ -370,7 +372,6 @@ if args.input_type.upper() != 'MOUNTED':
                 uuid = GetApfsContainerUuid(img, 0)
                 log.info('Found an APFS container with uuid: {}-{}-{}-{}-{}'.format(uuid[0:8], uuid[8:12], uuid[12:16], uuid[16:20], uuid[20:]))
                 found_osx = FindOsxPartitionInApfsContainer(img, None, img.get_size(), 0, uuid)
-                Disk_Info(mac_info, args.input_path, True).Write()
             else:
                 found_osx = IsOsxPartition(img, 0, mac_info)
         else:
@@ -392,6 +393,8 @@ if found_osx:
                 log.exception ("An exception occurred while running plugin - {}".format(plugin.__Plugin_Name))
 else:
     log.warning (":( Could not find a partition having an OSX installation on it")
+
+log.info("-"*50)
 
 # Final cleanup
 if img != None: img.close()

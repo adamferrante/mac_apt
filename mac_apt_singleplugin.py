@@ -1,5 +1,5 @@
 '''
-   Copyright (c) 2017 Yogesh Khatri 
+   Copyright (c) 2018 Yogesh Khatri 
 
    This file is part of mac_apt (macOS Artifact Parsing Tool).
    Usage or distribution of this software/code is subject to the 
@@ -30,7 +30,7 @@ import time
 import textwrap
 from plugin import *
 
-__VERSION = "0.2.6"
+__VERSION = "0.3"
 __PROGRAMNAME = "macOS Artifact Parsing Tool - Single Plugin mode"
 __EMAIL = "yogesh@swiftforensics.com"
 
@@ -149,6 +149,8 @@ try:
     plugin.Plugin_Start_Standalone(args.input_path, output_params)
 except Exception as ex:
     log.exception ("An exception occurred while running plugin - " + plugin_to_run)
+
+log.info("-"*50)
 
 if args.xlsx:
     output_params.xlsx_writer.CommitAndCloseFile()
